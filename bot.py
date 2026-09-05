@@ -1,57 +1,45 @@
+import os
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 
-API_ID = 12345678
-API_HASH = "YOUR_API_HASH"
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+SESSION_STRING = os.environ["SESSION_STRING"]
 
-# Old channel
-SOURCE = -1001234567890
-
-# New channel
-DESTINATION = -1009876543210
+SOURCE = int(os.environ["SOURCE"])
+DESTINATION = int(os.environ["DESTINATION"])
 
 app = Client(
-    "forward_userbot",
+    "userbot",
     api_id=API_ID,
-    api_hash=API_HASH
+    api_hash=API_HASH,
+    session_string=SESSION_STRING
 )
 
+LAST_ID = 0
 
-async def copy_message(message):
-    while True:
-        try:
-            await message.copy(DESTINATION)
-            print(f"Copied: {message.id}")
-            break
-
-        except FloodWait as e:
-            print(f"FloodWait: {e.value} seconds")
-            await asyncio.sleep(e.value)
-
-        except Exception as e:
-            print(f"Error {message.id}: {e}")
-            break
-
+async def copy_msg(msg):
+    global LAST_ID
+    try:
+        await msg.copy(DESTINATION)
+        LAST_ID = msg.id
+        print(f"Copied: {msg.id}")
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await copy_msg(msg)
+    except Exception as e:
+        print(e)
 
 @app.on_message(filters.chat(SOURCE))
-async def new_message(client, message):
-    await copy_message(message)
-
+async def live(_, msg):
+    if msg.id > LAST_ID:
+        await copy_msg(msg)
 
 async def main():
-    print("Userbot started...")
-
-    # Existing messages
-    print("Copying old messages...")
-
-    async for message in app.get_chat_history(SOURCE, reverse=True):
-        await copy_message(message)
-
-    print("Old messages completed.")
-    print("Waiting for new messages...")
-
+    global LAST_ID
+    async for msg in app.get_chat_history(SOURCE, reverse=True):
+        await copy_msg(msg)
     await asyncio.Event().wait()
-
 
 app.run(main())
