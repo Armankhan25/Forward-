@@ -7,12 +7,29 @@ from pyrogram.errors import FloodWait
 # ENV VARIABLES
 # =========================
 
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-SESSION_STRING = os.environ["SESSION_STRING"]
+try:
+    API_ID = int(os.environ["API_ID"])
+except (KeyError, ValueError):
+    raise RuntimeError(
+        "API_ID missing or invalid. Railway Variables me valid numeric API_ID add karo."
+    )
 
-SOURCE = int(os.environ["SOURCE"])
-DESTINATION = int(os.environ["DESTINATION"])
+API_HASH = os.environ.get("API_HASH", "").strip()
+SESSION_STRING = os.environ.get("SESSION_STRING", "").strip()
+
+if not API_HASH:
+    raise RuntimeError("API_HASH Railway Variables me missing hai.")
+
+if not SESSION_STRING:
+    raise RuntimeError("SESSION_STRING Railway Variables me missing hai.")
+
+try:
+    SOURCE = int(os.environ["SOURCE"])
+    DESTINATION = int(os.environ["DESTINATION"])
+except (KeyError, ValueError):
+    raise RuntimeError(
+        "SOURCE ya DESTINATION missing/invalid hai. Telegram channel ID (-100...) use karo."
+    )
 
 
 # =========================
@@ -27,7 +44,10 @@ app = Client(
 )
 
 
-# Last copied message ID
+# =========================
+# SETTINGS
+# =========================
+
 LAST_ID = 0
 
 
@@ -43,20 +63,21 @@ async def copy_msg(msg):
 
         LAST_ID = max(LAST_ID, msg.id)
 
-        print(f"Copied: {msg.id}")
+        print(f"✅ Copied message: {msg.id}")
 
     except FloodWait as e:
-        print(f"FloodWait: sleeping {e.value} seconds")
+        print(f"⏳ FloodWait: sleeping {e.value} seconds")
+
         await asyncio.sleep(e.value)
 
         await copy_msg(msg)
 
     except Exception as e:
-        print(f"Error copying {msg.id}: {e}")
+        print(f"❌ Error copying {msg.id}: {e}")
 
 
 # =========================
-# LIVE NEW MESSAGES
+# LIVE FORWARD
 # =========================
 
 @app.on_message(filters.chat(SOURCE))
@@ -67,17 +88,20 @@ async def live(_, msg):
 
 
 # =========================
-# MAIN
+# OLD MESSAGE COPY
 # =========================
 
-async def main():
+async def copy_old_messages():
+
     global LAST_ID
 
-    print("Starting old message copy...")
+    print("📦 Starting old message copy...")
 
-    # Pyrogram returns history newest -> oldest.
-    # We collect the messages first, then reverse them
-    # so they are copied oldest -> newest.
+    count = 0
+
+    # Pyrogram history normally comes newest -> oldest.
+    # Store messages first, then reverse them so they are copied
+    # from oldest -> newest.
 
     messages = []
 
@@ -85,25 +109,72 @@ async def main():
 
         messages.append(msg)
 
-    print(f"Found {len(messages)} messages.")
+    print(f"📦 Found {len(messages)} messages.")
 
-    # Oldest -> newest
-    messages.reverse()
+    for msg in reversed(messages):
 
-    for msg in messages:
+        if msg.id <= LAST_ID:
+            continue
 
-        if msg.id > LAST_ID:
-            await copy_msg(msg)
+        await copy_msg(msg)
 
-    print("Old messages copied successfully.")
-    print("Live forwarding started.")
+        count += 1
 
-    # Keep userbot running
-    await asyncio.Event().wait()
+        # Small delay to reduce flood limits
+        await asyncio.sleep(0.3)
+
+    print(f"✅ Old message copy completed. Copied: {count}")
 
 
 # =========================
-# START
+# MAIN
 # =========================
 
-app.run(main())
+async def main():
+
+    global LAST_ID
+
+    print("🚀 Starting Pyrogram Userbot...")
+
+    # IMPORTANT:
+    # Client is started before get_chat_history() is called.
+
+    async with app:
+
+        print("✅ Telegram client connected.")
+
+        me = await app.get_me()
+
+        print(
+            f"👤 Logged in as: "
+            f"{me.first_name or ''} "
+            f"(@{me.username or 'no_username'})"
+        )
+
+        # Check source/destination access
+        try:
+            source_chat = await app.get_chat(SOURCE)
+            destination_chat = await app.get_chat(DESTINATION)
+
+            print(f"📥 Source: {source_chat.title or source_chat.first_name}")
+            print(f"📤 Destination: {destination_chat.title or destination_chat.first_name}")
+
+        except Exception as e:
+            print(f"❌ Channel access error: {e}")
+            return
+
+        # Copy old messages first
+        await copy_old_messages()
+
+        print("🟢 Live forwarding is now active.")
+
+        # Keep the client running
+        await asyncio.Event().wait()
+
+
+# =========================
+# RUN
+# =========================
+
+if __name__ == "__main__":
+    asyncio.run(main())
