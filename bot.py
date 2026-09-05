@@ -3,12 +3,15 @@ import asyncio
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.errors import FloodWaitError
+from telethon.errors import (
+    FloodWaitError,
+    AuthKeyDuplicatedError,
+)
 
 
-# =========================
-# RAILWAY VARIABLES
-# =========================
+# =========================================================
+# ENVIRONMENT VARIABLES
+# =========================================================
 
 try:
     API_ID = int(os.environ["API_ID"])
@@ -26,41 +29,54 @@ if not SESSION_STRING:
 
 try:
     SOURCE = int(os.environ["SOURCE"])
+except (KeyError, ValueError):
+    raise RuntimeError(
+        "❌ SOURCE invalid hai. Channel ID -100... format me do."
+    )
+
+try:
     DESTINATION = int(os.environ["DESTINATION"])
 except (KeyError, ValueError):
     raise RuntimeError(
-        "❌ SOURCE ya DESTINATION invalid hai. "
-        "Channel ID -100... format me do."
+        "❌ DESTINATION invalid hai. Channel ID -100... format me do."
     )
 
 
-# =========================
+# =========================================================
 # TELETHON CLIENT
-# =========================
+# =========================================================
 
 client = TelegramClient(
     StringSession(SESSION_STRING),
     API_ID,
-    API_HASH
+    API_HASH,
+    auto_reconnect=True,
+    connection_retries=5,
+    retry_delay=5,
 )
 
 
-# =========================
+# =========================================================
 # SETTINGS
-# =========================
+# =========================================================
 
-LAST_ID = 0
 COPYING_OLD = True
+LAST_ID = 0
 
 
-# =========================
+# =========================================================
 # COPY MESSAGE
-# =========================
+# =========================================================
 
 async def copy_message(message):
     global LAST_ID
 
     try:
+
+        # Service messages ko ignore karo
+        if message.action:
+            return
+
         await client.send_message(
             DESTINATION,
             message
@@ -71,63 +87,136 @@ async def copy_message(message):
         print(f"✅ Copied: {message.id}")
 
     except FloodWaitError as e:
-        print(f"⏳ FloodWait: {e.seconds} seconds")
+
+        print(
+            f"⏳ FloodWait: {e.seconds} seconds"
+        )
 
         await asyncio.sleep(e.seconds)
 
         await copy_message(message)
 
     except Exception as e:
-        print(f"❌ Error {message.id}: {e}")
+
+        print(
+            f"❌ Error {message.id}: {type(e).__name__}: {e}"
+        )
 
 
-# =========================
-# LIVE MESSAGES
-# =========================
+# =========================================================
+# LIVE MESSAGE HANDLER
+# =========================================================
 
 @client.on(events.NewMessage(chats=SOURCE))
 async def live_message(event):
 
     global LAST_ID
 
-    # Old messages copy hone tak live message ko ignore
-    # karenge; baad me history cutoff ke baad live copy hoga.
+    # Old messages copy hone tak live message ignore
     if COPYING_OLD:
         return
 
-    if event.message.id > LAST_ID:
-        await copy_message(event.message)
+    message = event.message
+
+    if message.id <= LAST_ID:
+        return
+
+    await copy_message(message)
 
 
-# =========================
-# OLD MESSAGE COPY
-# =========================
+# =========================================================
+# GET LAST DESTINATION MESSAGE
+# =========================================================
+
+async def get_destination_last_id():
+
+    global LAST_ID
+
+    try:
+
+        last_message = await client.get_messages(
+            DESTINATION,
+            limit=1
+        )
+
+        if last_message:
+
+            LAST_ID = last_message[0].id
+
+            print(
+                f"📌 Destination last message ID: {LAST_ID}"
+            )
+
+        else:
+
+            LAST_ID = 0
+
+            print(
+                "📌 Destination empty hai."
+            )
+
+    except Exception as e:
+
+        print(
+            f"⚠️ Destination last message check failed: {e}"
+        )
+
+        LAST_ID = 0
+
+
+# =========================================================
+# COPY OLD MESSAGES
+# =========================================================
 
 async def copy_old_messages():
+
     global LAST_ID
     global COPYING_OLD
 
     print("📦 Old messages copy start...")
 
-    messages = []
+    total = 0
 
-    async for message in client.iter_messages(
-        SOURCE,
-        reverse=True
-    ):
-        messages.append(message)
+    try:
 
-    print(f"📦 Total messages found: {len(messages)}")
+        async for message in client.iter_messages(
+            SOURCE,
+            reverse=True
+        ):
 
-    for message in messages:
+            if message.id <= LAST_ID:
+                continue
 
-        if message.id <= LAST_ID:
-            continue
+            await copy_message(message)
 
-        await copy_message(message)
+            total += 1
 
-        # Flood limit avoid karne ke liye
-        await asyncio.sleep(0.3)
+            # Small delay
+            await asyncio.sleep(0.3)
+
+        print(
+            f"📦 Old messages copied: {total}"
+        )
+
+    except FloodWaitError as e:
+
+        print(
+            f"⏳ FloodWait during history: "
+            f"{e.seconds} seconds"
+        )
+
+        await asyncio.sleep(e.seconds)
+
+        await copy_old_messages()
+
+        return
+
+    except Exception as e:
+
+        print(
+            f"❌ Old message copy error: "
+            f"{type(e).__name__}: {e}"
+        )
 
     COPYING_OLD = False
 
@@ -135,59 +224,219 @@ async def copy_old_messages():
     print("🟢 Live forwarding active.")
 
 
-# =========================
+# =========================================================
 # MAIN
-# =========================
+# =========================================================
 
 async def main():
 
     print("🚀 Starting Telethon Userbot...")
 
-    await client.start()
+    # -----------------------------------------------------
+    # CONNECT WITHOUT INTERACTIVE LOGIN
+    # -----------------------------------------------------
 
-    print("✅ Telegram connected.")
-
-    me = await client.get_me()
-
-    print(
-        f"👤 Logged in as: "
-        f"{me.first_name or ''} "
-        f"(@{me.username or 'no_username'})"
-    )
-
-    # Check source
     try:
-        source_chat = await client.get_entity(SOURCE)
-        print(f"📥 Source: {getattr(source_chat, 'title', SOURCE)}")
-    except Exception as e:
-        print(f"❌ Source channel access error: {e}")
-        await client.disconnect()
+
+        await client.connect()
+
+    except AuthKeyDuplicatedError:
+
+        print(
+            "❌ AuthKeyDuplicatedError!"
+        )
+
+        print(
+            "❌ Ye SESSION_STRING kisi aur IP/process "
+            "par bhi use ho rahi hai."
+        )
+
+        print(
+            "❌ Same session ko multiple Railway "
+            "deployments/processes me mat chalao."
+        )
+
         return
 
-    # Check destination
+    except Exception as e:
+
+        print(
+            f"❌ Telegram connection failed: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # AUTH CHECK
+    # -----------------------------------------------------
+
     try:
-        destination_chat = await client.get_entity(DESTINATION)
+
+        authorized = await client.is_user_authorized()
+
+    except AuthKeyDuplicatedError:
+
+        print(
+            "❌ SESSION_STRING AuthKeyDuplicated hai."
+        )
+
+        return
+
+    except Exception as e:
+
+        print(
+            f"❌ Session check failed: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        return
+
+    if not authorized:
+
+        print(
+            "❌ SESSION_STRING authorized nahi hai."
+        )
+
+        print(
+            "❌ Telethon String Session invalid/expired hai."
+        )
+
+        print(
+            "❌ Phone login Railway par possible nahi hai."
+        )
+
+        return
+
+    print("✅ Telegram connected.")
+    print("✅ Telethon session authorized.")
+
+
+    # -----------------------------------------------------
+    # GET USER
+    # -----------------------------------------------------
+
+    try:
+
+        me = await client.get_me()
+
+        print(
+            f"👤 Logged in as: "
+            f"{me.first_name or ''} "
+            f"(@{me.username or 'no_username'})"
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Account information error: {e}"
+        )
+
+        return
+
+
+    # -----------------------------------------------------
+    # CHECK SOURCE
+    # -----------------------------------------------------
+
+    try:
+
+        source_chat = await client.get_entity(SOURCE)
+
+        print(
+            f"📥 Source: "
+            f"{getattr(source_chat, 'title', SOURCE)}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Source channel access error: {e}"
+        )
+
+        return
+
+
+    # -----------------------------------------------------
+    # CHECK DESTINATION
+    # -----------------------------------------------------
+
+    try:
+
+        destination_chat = await client.get_entity(
+            DESTINATION
+        )
+
         print(
             f"📤 Destination: "
             f"{getattr(destination_chat, 'title', DESTINATION)}"
         )
+
     except Exception as e:
-        print(f"❌ Destination channel access error: {e}")
-        await client.disconnect()
+
+        print(
+            f"❌ Destination channel access error: {e}"
+        )
+
         return
 
-    # Copy old messages
+
+    # -----------------------------------------------------
+    # GET DESTINATION LAST MESSAGE
+    # -----------------------------------------------------
+
+    await get_destination_last_id()
+
+
+    # -----------------------------------------------------
+    # COPY OLD MESSAGES
+    # -----------------------------------------------------
+
     await copy_old_messages()
 
+
+    # -----------------------------------------------------
+    # RUN FOREVER
+    # -----------------------------------------------------
+
     print("🤖 Userbot is running...")
+    print("🟢 Waiting for new messages...")
 
-    # Keep running
-    await client.run_until_disconnected()
+    try:
+
+        await client.run_until_disconnected()
+
+    except AuthKeyDuplicatedError:
+
+        print(
+            "❌ AuthKeyDuplicatedError:"
+        )
+
+        print(
+            "❌ Same Telethon session kisi "
+            "dusre IP/process par chal rahi hai."
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Userbot stopped: "
+            f"{type(e).__name__}: {e}"
+        )
 
 
-# =========================
-# RUN
-# =========================
+# =========================================================
+# START
+# =========================================================
 
 if __name__ == "__main__":
-    asyncio.run(main())
+
+    try:
+
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+
+        print(
+            "🛑 Userbot stopped."
+        )
